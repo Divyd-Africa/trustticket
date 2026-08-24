@@ -1,0 +1,1 @@
+{% extends 'emails/base.html' %}{% block content %}<h1>Your ticket has been sent</h1><p>The seller marked <b>{{ title }}</b> as delivered{% if off_platform %} off-platform{% endif %}. Review the ticket and confirm receipt or open a dispute.</p><p><a href="{{ order_url }}">Review ticket →</a></p>{% endblock %}

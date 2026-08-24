@@ -1,0 +1,1 @@
+{% extends 'emails/base.html' %}{% block content %}<h1>Payment received</h1><p>Payment for <b>{{ title }}</b> is protected in escrow. Please deliver the ticket details to the buyer, including any QR code when it becomes available.</p><p><a href="{{ order_url }}">Open the order →</a></p>{% endblock %}

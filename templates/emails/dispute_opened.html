@@ -1,0 +1,1 @@
+{% extends 'emails/base.html' %}{% block content %}<h1>Dispute opened</h1><p>A buyer opened a dispute for <b>{{ title }}</b>. Please review the order and confirm whether the ticket was delivered or sold elsewhere.</p><p><a href="{{ order_url }}">Review dispute →</a></p>{% endblock %}
