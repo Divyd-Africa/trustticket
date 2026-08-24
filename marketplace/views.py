@@ -160,29 +160,24 @@ def home(request):
     listings = Listing.objects.filter(status="available", event_date__gte=timezone.now())
     return render(request, "marketplace/home.html", {"listings": listings})
 
+@login_required
 def sell(request):
+    # The public CTA points at /sell/, but authenticated sellers should first
+    # land on their dashboard. The dashboard's own CTA is allowed to open the
+    # form via its referrer.
+    if request.method == "GET" and not request.META.get("HTTP_REFERER", "").rstrip("/").endswith("/dashboard"):
+        return redirect("dashboard")
     if request.method == "POST":
         data = request.POST
-        if request.user.is_authenticated:
-            profile = request.user.profile
-            account = profile.bank_accounts.filter(is_default=True).first()
-            if not account:
-                messages.error(request, "Add a verified payout account before creating a listing.")
-                return redirect("bank_account")
-            seller_name, seller_email = request.user.get_full_name() or request.user.first_name, request.user.email
-            bank_code = account.bank_code if account else ""
-            account_number = account.account_number if account else ""
-            account_name = account.account_name if account else ""
-            bank_name = account.bank_name if account else ""
-        else:
-            resolved = resolve_bank(data["seller_bank_code"], data["seller_account_number"])
-            seller_name, seller_email = data["seller_name"], data["seller_email"]
-            bank_code, account_number = data["seller_bank_code"], data["seller_account_number"]
-            account_name, bank_name = resolved.get("account_name", data.get("seller_account_name", "")), bank_name_for_code(data["seller_bank_code"])
-        listing = Listing.objects.create(seller=request.user if request.user.is_authenticated else None, title=data["title"], venue=data["venue"], city=data["city"], event_date=data["event_date"], ticket_type=data["ticket_type"], quantity=data["quantity"], available_quantity=data["quantity"], price=data["price"], description=data.get("description", ""), delivery_note=data["delivery_note"], seller_name=seller_name, seller_email=seller_email, seller_bank=bank_name, seller_bank_code=bank_code, seller_account_number=account_number, seller_account_name=account_name)
+        profile = request.user.profile
+        account = profile.bank_accounts.filter(is_default=True).first()
+        if not account:
+            messages.error(request, "Add a verified payout account before creating a listing.")
+            return redirect("bank_account")
+        listing = Listing.objects.create(seller=request.user, title=data["title"], venue=data["venue"], city=data["city"], event_date=data["event_date"], ticket_type=data["ticket_type"], quantity=data["quantity"], available_quantity=data["quantity"], price=data["price"], description=data.get("description", ""), delivery_note=data["delivery_note"], seller_name=request.user.get_full_name() or request.user.first_name, seller_email=request.user.email, seller_bank=account.bank_name, seller_bank_code=account.bank_code, seller_account_number=account.account_number, seller_account_name=account.account_name)
         messages.success(request, "Your listing is live. Buyers will see that funds are protected until delivery is confirmed.")
         return redirect("listing_detail", pk=listing.pk)
-    return render(request, "marketplace/sell.html", {"banks": list_banks(), "account": request.user.profile.bank_accounts.filter(is_default=True).first() if request.user.is_authenticated else None})
+    return render(request, "marketplace/sell.html", {"account": request.user.profile.bank_accounts.filter(is_default=True).first()})
 
 def listing_detail(request, pk):
     return render(request, "marketplace/listing_detail.html", {"listing": get_object_or_404(Listing, pk=pk)})
