@@ -16,7 +16,11 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from .models import BankAccount, EmailOTP, ExchangeLink, Listing, Order, Profile, TicketAttachment
 from .reservations import release_expired_reservations
-from .services import bank_name_for_code, create_bachs_destination, create_checkout, list_banks, refund_payment, release_payout, resolve_bank, send_email, send_templated_email, upload_ticket_file
+from .services import bank_name_for_code, create_bachs_destination, create_checkout, list_banks, refund_payment, resolve_bank, upload_ticket_file
+
+def send_templated_email(to, subject, template, context):
+    from .tasks import send_email_task
+    return send_email_task.delay(to, subject, template, context)
 
 def register(request):
     if request.method == "POST":
@@ -257,35 +261,10 @@ def confirm_receipt(request, pk):
             profile = order.listing.seller.profile
             profile.pending_balance = max(profile.pending_balance - order.total, 0)
             profile.save(update_fields=["pending_balance", "wallet_balance"])
-        payout_result = {}
-        payout_status = "processing"
-        payout_error = ""
-        try:
-            payout_result = release_payout(order) or {}
-            provider_status = str(payout_result.get("status", payout_result.get("payout_status", ""))).lower()
-            if provider_status in {"succeeded", "successful", "completed", "paid", "settled"}:
-                payout_status = "paid"
-            elif payout_result.get("demo"):
-                payout_status = "demo"
-        except Exception as error:
-            payout_status = "failed"
-            payout_error = str(error)[:1000]
-        order.payout_status = payout_status
-        order.payout_reference = str(payout_result.get("id", payout_result.get("payout_id", payout_result.get("reference", ""))))
-        order.payout_amount = payout_result.get("amount", order.total) or order.total
-        order.payout_fee = payout_result.get("fee", payout_result.get("fees", 0)) or 0
-        order.payout_response = payout_result if isinstance(payout_result, dict) else {"raw": str(payout_result)}
-        order.payout_error = payout_error
-        order.payout_initiated_at = timezone.now()
-        if payout_status == "paid":
-            order.payout_completed_at = timezone.now()
-        order.save(update_fields=["payout_status", "payout_reference", "payout_amount", "payout_fee", "payout_response", "payout_error", "payout_initiated_at", "payout_completed_at", "updated_at"])
-        if payout_status == "failed" and order.listing.seller_id:
-            profile = order.listing.seller.profile
-            profile.wallet_balance += order.total
-            profile.save(update_fields=["wallet_balance"])
-        send_templated_email(order.listing.seller_email, "Your TicketTrust payout is on the way", "payout_queued", {"title": order.listing.title})
-        send_templated_email(order.buyer_email, "Ticket receipt confirmed", "receipt_confirmed", {"title": order.listing.title})
+        order.payout_status = "queued"
+        order.save(update_fields=["payout_status", "updated_at"])
+        from .tasks import process_payout_task
+        process_payout_task.delay(order.pk)
         messages.success(request, "Receipt confirmed. Seller payout is now queued.")
     return redirect("order_detail", pk=pk)
 
