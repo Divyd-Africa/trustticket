@@ -156,9 +156,20 @@ def bachs_webhook(request):
     webhook_timestamp = request.headers.get("webhook-timestamp", request.headers.get("X-Bachs-Timestamp", ""))
     valid_signature = False
     if secret and supplied:
+        # Bachs' documented format: HMAC-SHA256 hex of
+        # "{unix_timestamp}.{raw_body}" using the webhook secret as-is.
+        if webhook_timestamp:
+            try:
+                timestamp = int(webhook_timestamp)
+                if abs(time.time() - timestamp) <= 300:
+                    message = f"{timestamp}.".encode() + request.body
+                    expected = hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+                    valid_signature = hmac.compare_digest(expected, supplied)
+            except (TypeError, ValueError):
+                valid_signature = False
         # Bachs uses the Standard Webhooks format: the whsec_ secret is
         # base64-encoded and the signed message is id.timestamp.raw_body.
-        if webhook_id and webhook_timestamp and secret.startswith("whsec_"):
+        if not valid_signature and webhook_id and webhook_timestamp and secret.startswith("whsec_"):
             try:
                 signing_key = base64.b64decode(secret.removeprefix("whsec_"))
                 signed_message = f"{webhook_id}.{webhook_timestamp}.".encode() + request.body
