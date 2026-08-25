@@ -17,9 +17,12 @@ def reconcile_collection_event(payload, allow_expired=False):
     if not order_id:
         return {"status": "ignored", "reason": "missing order_id"}
 
-    order = Order.objects.select_for_update().select_related("listing__seller__profile").filter(pk=order_id).first()
+    # PostgreSQL cannot apply FOR UPDATE to the nullable side of the seller
+    # outer join. Lock the order row first, then load related objects safely.
+    order = Order.objects.select_for_update().filter(pk=order_id).first()
     if not order:
         return {"status": "ignored", "reason": f"order {order_id} not found"}
+    order = Order.objects.select_related("listing__seller__profile").get(pk=order.pk)
     if order.status != "awaiting_payment":
         return {"status": "already_processed", "order_id": order.pk, "order_status": order.status}
     if order.reservation_expires_at and order.reservation_expires_at <= timezone.now() and not allow_expired:
