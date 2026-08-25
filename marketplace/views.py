@@ -3,6 +3,8 @@ import hmac
 import json
 import os
 import secrets
+import base64
+import time
 from random import randint
 from datetime import timedelta
 from django.contrib import messages
@@ -127,9 +129,32 @@ def bachs_webhook(request):
     if request.method != "POST":
         return JsonResponse({"detail": "POST required"}, status=405)
     secret = os.environ.get("BACHS_WEBHOOK_SECRET", "")
-    supplied = request.headers.get("X-Bachs-Signature", request.headers.get("X-Webhook-Signature", ""))
-    expected = hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest() if secret else ""
-    if not secret or not supplied or not hmac.compare_digest(supplied, expected):
+    supplied = request.headers.get("webhook-signature", request.headers.get("X-Bachs-Signature", request.headers.get("X-Webhook-Signature", "")))
+    webhook_id = request.headers.get("webhook-id", request.headers.get("X-Bachs-Webhook-Id", ""))
+    webhook_timestamp = request.headers.get("webhook-timestamp", request.headers.get("X-Bachs-Timestamp", ""))
+    valid_signature = False
+    if secret and supplied:
+        # Bachs uses the Standard Webhooks format: the whsec_ secret is
+        # base64-encoded and the signed message is id.timestamp.raw_body.
+        if webhook_id and webhook_timestamp and secret.startswith("whsec_"):
+            try:
+                signing_key = base64.b64decode(secret.removeprefix("whsec_"))
+                signed_message = f"{webhook_id}.{webhook_timestamp}.".encode() + request.body
+                digest = base64.b64encode(hmac.new(signing_key, signed_message, hashlib.sha256).digest()).decode()
+                valid_signature = any(
+                    hmac.compare_digest(part.split(",", 1)[1], digest)
+                    for part in supplied.split()
+                    if part.startswith("v1,") and "," in part
+                )
+            except (ValueError, TypeError):
+                valid_signature = False
+        if not valid_signature:
+            # Keep compatibility with the original raw-body hex signature
+            # format used by earlier Bachs integrations.
+            expected = hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest()
+            supplied_legacy = supplied.removeprefix("sha256=")
+            valid_signature = hmac.compare_digest(supplied_legacy, expected)
+    if not valid_signature:
         return JsonResponse({"detail": "Invalid signature"}, status=401)
     payload = json.loads(request.body or "{}")
     data = payload.get("data", payload)
