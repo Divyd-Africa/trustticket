@@ -96,6 +96,7 @@ class Order(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     payment_reference = models.CharField(max_length=160, blank=True)
+    payment_provider_response = models.JSONField(default=dict, blank=True)
     payment_expires_at = models.DateTimeField(null=True, blank=True)
     reservation_expires_at = models.DateTimeField(null=True, blank=True)
     buyer_access_token = models.UUIDField(default=uuid.uuid4, editable=False)

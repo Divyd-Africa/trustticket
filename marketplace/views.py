@@ -18,6 +18,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from .models import BankAccount, EmailOTP, ExchangeLink, Listing, Order, Profile, TicketAttachment
+from .payment_reconciliation import reconcile_collection_event
 from .reservations import release_expired_reservations
 from .services import bank_name_for_code, create_bachs_destination, create_checkout, list_banks, refund_payment, resolve_bank, upload_ticket_file
 
@@ -157,35 +158,12 @@ def bachs_webhook(request):
     if not valid_signature:
         return JsonResponse({"detail": "Invalid signature"}, status=401)
     payload = json.loads(request.body or "{}")
-    data = payload.get("data", payload)
-    metadata = data.get("metadata", {}) or {}
-    order_id = metadata.get("order_id") or data.get("order_id")
-    if order_id:
-        order = Order.objects.filter(pk=order_id).first()
-        event = str(payload.get("type", payload.get("event", data.get("status", "")))).lower()
-        payment_confirmed = False
-        if order and ("succeed" in event or event in {"accepted", "paid"}):
-            if order.status == "awaiting_payment" and order.reservation_expires_at and order.reservation_expires_at > timezone.now():
-                order.status = "in_escrow"; order.payment_reference = str(data.get("id", data.get("reference", ""))); order.save(update_fields=["status", "payment_reference", "updated_at"])
-                if order.listing.seller_id:
-                    profile = order.listing.seller.profile
-                    profile.pending_balance += order.total
-                    profile.save(update_fields=["pending_balance"])
-                payment_confirmed = True
-            elif order.status == "awaiting_payment":
-                order.status = "refund_requested"; order.save(update_fields=["status", "updated_at"])
-        elif order and "refund" in event:
-            order.status = "refunded"; order.save(update_fields=["status", "updated_at"])
-        if payment_confirmed:
-            order_url = request.build_absolute_uri(f"/order/{order.pk}/?buyer_token={order.buyer_access_token}")
-            try:
-                send_templated_email(order.buyer_email, "Your TicketTrust payment is protected", "payment_received", {"title": order.listing.title, "order_url": order_url})
-            except Exception:
-                pass
-            try:
-                send_templated_email(order.listing.seller_email, "Payment received — deliver the ticket", "payment_escrow_seller", {"title": order.listing.title, "order_url": order_url, "dashboard_url": request.build_absolute_uri("/dashboard/")})
-            except Exception:
-                pass
+    result = reconcile_collection_event(payload)
+    if result.get("status") == "confirmed":
+        order = result["order"]
+        order_url = request.build_absolute_uri(f"/order/{order.pk}/?buyer_token={order.buyer_access_token}")
+        send_templated_email(order.buyer_email, "Your TicketTrust payment is protected", "payment_received", {"title": order.listing.title, "order_url": order_url})
+        send_templated_email(order.listing.seller_email, "Payment received — deliver the ticket", "payment_escrow_seller", {"title": order.listing.title, "order_url": order_url, "dashboard_url": request.build_absolute_uri("/dashboard/")})
     return JsonResponse({"received": True})
 
 def home(request):
