@@ -14,9 +14,16 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from .models import BankAccount, EmailOTP, ExchangeLink, Listing, Order, Profile, TicketAttachment
 from .reservations import release_expired_reservations
 from .services import bank_name_for_code, create_bachs_destination, create_checkout, list_banks, refund_payment, resolve_bank, upload_ticket_file
+
+def parse_form_datetime(value):
+    parsed = parse_datetime(value)
+    if parsed is None:
+        raise ValueError("Enter a valid event date and time.")
+    return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
 
 def send_templated_email(to, subject, template, context):
     from .tasks import send_email_task
@@ -102,7 +109,7 @@ def bank_account(request):
 def create_exchange(request):
     if request.method == "POST":
         resolved = resolve_bank(request.POST["seller_bank_code"], request.POST["seller_account_number"])
-        link = ExchangeLink.objects.create(token=secrets.token_urlsafe(24), seller_name=request.POST["seller_name"], seller_email=request.POST["seller_email"], seller_phone=request.POST["seller_phone"], seller_bank_name=bank_name_for_code(request.POST["seller_bank_code"]), seller_bank_code=request.POST["seller_bank_code"], seller_account_number=request.POST["seller_account_number"], title=request.POST["title"], price=request.POST["price"], event_date=request.POST["event_date"])
+        link = ExchangeLink.objects.create(token=secrets.token_urlsafe(24), seller_name=request.POST["seller_name"], seller_email=request.POST["seller_email"], seller_phone=request.POST["seller_phone"], seller_bank_name=bank_name_for_code(request.POST["seller_bank_code"]), seller_bank_code=request.POST["seller_bank_code"], seller_account_number=request.POST["seller_account_number"], title=request.POST["title"], price=request.POST["price"], event_date=parse_form_datetime(request.POST["event_date"]))
         return render(request, "marketplace/exchange_created.html", {"link": link, "share_url": request.build_absolute_uri(f"/exchange/{link.token}/")})
     return render(request, "marketplace/exchange_create.html", {"banks": list_banks()})
 
@@ -174,7 +181,7 @@ def sell(request):
         if not account:
             messages.error(request, "Add a verified payout account before creating a listing.")
             return redirect("bank_account")
-        listing = Listing.objects.create(seller=request.user, title=data["title"], venue=data["venue"], city=data["city"], event_date=data["event_date"], ticket_type=data["ticket_type"], quantity=data["quantity"], available_quantity=data["quantity"], price=data["price"], description=data.get("description", ""), delivery_note=data["delivery_note"], seller_name=request.user.get_full_name() or request.user.first_name, seller_email=request.user.email, seller_bank=account.bank_name, seller_bank_code=account.bank_code, seller_account_number=account.account_number, seller_account_name=account.account_name)
+        listing = Listing.objects.create(seller=request.user, title=data["title"], venue=data["venue"], city=data["city"], event_date=parse_form_datetime(data["event_date"]), ticket_type=data["ticket_type"], quantity=data["quantity"], available_quantity=data["quantity"], price=data["price"], description=data.get("description", ""), delivery_note=data["delivery_note"], seller_name=request.user.get_full_name() or request.user.first_name, seller_email=request.user.email, seller_bank=account.bank_name, seller_bank_code=account.bank_code, seller_account_number=account.account_number, seller_account_name=account.account_name)
         messages.success(request, "Your listing is live. Buyers will see that funds are protected until delivery is confirmed.")
         return redirect("listing_detail", pk=listing.pk)
     return render(request, "marketplace/sell.html", {"account": request.user.profile.bank_accounts.filter(is_default=True).first()})

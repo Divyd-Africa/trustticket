@@ -9,12 +9,26 @@ import certifi
 import cloudinary
 import cloudinary.uploader
 from django.conf import settings
+from django.core.cache import cache
 from django.template.loader import render_to_string
 
 logger = logging.getLogger(__name__)
 
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
-FALLBACK_BANKS = [{"name": "Access Bank", "code": "044"}, {"name": "First Bank", "code": "011"}, {"name": "GTBank", "code": "058"}, {"name": "UBA", "code": "033"}, {"name": "Zenith Bank", "code": "057"}]
+FALLBACK_BANKS = [
+    {"name": "Access Bank", "code": "044"}, {"name": "Citibank Nigeria", "code": "023"},
+    {"name": "Ecobank Nigeria", "code": "050"}, {"name": "Fidelity Bank", "code": "070"},
+    {"name": "First Bank of Nigeria", "code": "011"}, {"name": "First City Monument Bank", "code": "214"},
+    {"name": "Globus Bank", "code": "103"}, {"name": "Guaranty Trust Bank", "code": "058"},
+    {"name": "Heritage Bank", "code": "030"}, {"name": "Jaiz Bank", "code": "301"},
+    {"name": "Keystone Bank", "code": "082"}, {"name": "Kuda Microfinance Bank", "code": "090267"},
+    {"name": "Moniepoint Microfinance Bank", "code": "090405"}, {"name": "Opay", "code": "100004"},
+    {"name": "Polaris Bank", "code": "076"}, {"name": "Premium Trust Bank", "code": "105"},
+    {"name": "Stanbic IBTC Bank", "code": "221"}, {"name": "Sterling Bank", "code": "232"},
+    {"name": "Union Bank of Nigeria", "code": "032"}, {"name": "United Bank for Africa", "code": "033"},
+    {"name": "Unity Bank", "code": "215"}, {"name": "Wema Bank", "code": "035"},
+    {"name": "Zenith Bank", "code": "057"},
+]
 
 def _post(url, payload, token):
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "TicketTrust/1.0"}, method="POST")
@@ -48,7 +62,7 @@ def upload_ticket_file(file_obj, order_id):
 def _get(url, token):
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "User-Agent": "TicketTrust/1.0"})
     try:
-        with urllib.request.urlopen(request, timeout=12, context=SSL_CONTEXT) as response:
+        with urllib.request.urlopen(request, timeout=8, context=SSL_CONTEXT) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
         body = error.read().decode(errors="replace")
@@ -91,14 +105,25 @@ def refund_payment(order):
     return _post(url, {"order_id": str(order.pk), "amount": str(order.total), "metadata": {"reason": "tickettrust_refund"}}, token)
 
 def list_banks():
+    cached = cache.get("tickettrust:bachs:banks")
+    if cached:
+        return cached
     bachs_token = os.environ.get("BACHS_API_KEY")
     if bachs_token:
         base = os.environ.get("BACHS_API_BASE", "https://sandbox-api.bachs.io").rstrip("/")
         try:
             data = _get(f"{base}/v1/reference/banks?country={os.environ.get('BACHS_COUNTRY', 'NG')}", bachs_token)
-            return data.get("banks", [])
+            banks = data if isinstance(data, list) else data.get("banks") or data.get("data") or []
+            if isinstance(banks, dict):
+                banks = banks.get("banks") or banks.get("data") or []
+            normalized = [{"name": bank.get("name", bank.get("bank_name", "Selected bank")), "code": str(bank.get("code", bank.get("bank_code", "")))} for bank in banks if bank.get("code", bank.get("bank_code"))]
+            if normalized:
+                cache.set("tickettrust:bachs:banks", normalized, 3600)
+                return normalized
+            raise RuntimeError("Bachs returned an empty bank list")
         except Exception:
             logger.exception("Bachs bank list unavailable; using temporary fallback")
+            cache.set("tickettrust:bachs:banks", FALLBACK_BANKS, 300)
             return FALLBACK_BANKS
     token = os.environ.get("BANK_API_KEY")
     url = os.environ.get("BANK_LIST_URL")
@@ -107,7 +132,9 @@ def list_banks():
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "User-Agent": "TicketTrust/1.0"})
     with urllib.request.urlopen(request, timeout=12, context=SSL_CONTEXT) as response:
         data = json.loads(response.read())
-    return data.get("data", data.get("banks", data))
+    banks = data.get("data", data.get("banks", data))
+    cache.set("tickettrust:bachs:banks", banks, 3600)
+    return banks
 
 def bank_name_for_code(code):
     return next((str(bank.get("name", bank.get("bank_name", ""))) for bank in list_banks() if str(bank.get("code", bank.get("bank_code", ""))) == str(code)), "Selected bank")
