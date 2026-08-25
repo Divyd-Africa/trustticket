@@ -39,3 +39,9 @@ CELERY_BROKER_URL = REDIS_URL or "redis://localhost:6379/0"
 CELERY_RESULT_BACKEND = REDIS_URL or "redis://localhost:6379/0"
 CELERY_TASK_ALWAYS_EAGER = DEBUG and not bool(REDIS_URL)
 CELERY_TASK_EAGER_PROPAGATES = True
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "loggers": {"marketplace": {"handlers": ["console"], "level": "INFO", "propagate": False}},
+}

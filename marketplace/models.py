@@ -119,3 +119,18 @@ class TicketAttachment(models.Model):
     file_name = models.CharField(max_length=255)
     file_type = models.CharField(max_length=100, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+class BachsWebhookDelivery(models.Model):
+    event_id = models.CharField(max_length=160, blank=True)
+    event_type = models.CharField(max_length=120, blank=True)
+    status = models.CharField(max_length=40, default="received")
+    signature_valid = models.BooleanField(default=False)
+    order = models.ForeignKey(Order, on_delete=models.SET_NULL, null=True, blank=True, related_name="bachs_webhook_deliveries")
+    headers = models.JSONField(default=dict, blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]

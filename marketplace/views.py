@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import base64
@@ -17,10 +18,12 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from .models import BankAccount, EmailOTP, ExchangeLink, Listing, Order, Profile, TicketAttachment
+from .models import BachsWebhookDelivery, BankAccount, EmailOTP, ExchangeLink, Listing, Order, Profile, TicketAttachment
 from .payment_reconciliation import reconcile_collection_event
 from .reservations import release_expired_reservations
 from .services import bank_name_for_code, create_bachs_destination, create_checkout, list_banks, refund_payment, resolve_bank, upload_ticket_file
+
+logger = logging.getLogger(__name__)
 
 def parse_form_datetime(value):
     parsed = parse_datetime(value)
@@ -129,6 +132,24 @@ def exchange_detail(request, token):
 def bachs_webhook(request):
     if request.method != "POST":
         return JsonResponse({"detail": "POST required"}, status=405)
+    raw_payload = request.body or b"{}"
+    try:
+        incoming_payload = json.loads(raw_payload)
+    except json.JSONDecodeError as error:
+        BachsWebhookDelivery.objects.create(status="invalid_json", error=str(error), headers={key.lower(): value for key, value in request.headers.items() if key.lower() != "authorization"})
+        return JsonResponse({"detail": "Invalid JSON"}, status=400)
+    incoming_data = incoming_payload.get("data", incoming_payload) or {}
+    incoming_metadata = incoming_data.get("metadata", {}) or {}
+    incoming_order_id = incoming_metadata.get("order_id") or incoming_data.get("order_id")
+    existing_order_id = incoming_order_id if str(incoming_order_id).isdigit() and Order.objects.filter(pk=incoming_order_id).exists() else None
+    delivery = BachsWebhookDelivery.objects.create(
+        event_id=str(incoming_payload.get("id", "")),
+        event_type=str(incoming_payload.get("type", incoming_payload.get("event", incoming_data.get("status", "")))),
+        order_id=existing_order_id,
+        payload=incoming_payload,
+        headers={key.lower(): (f"{value[:8]}… ({len(value)} chars)" if key.lower() in {"webhook-signature", "x-bachs-signature", "x-webhook-signature"} else value) for key, value in request.headers.items() if key.lower() != "authorization"},
+    )
+    logger.info("Bachs webhook received delivery=%s event=%s order=%s", delivery.pk, delivery.event_type, incoming_order_id)
     secret = os.environ.get("BACHS_WEBHOOK_SECRET", "")
     supplied = request.headers.get("webhook-signature", request.headers.get("X-Bachs-Signature", request.headers.get("X-Webhook-Signature", "")))
     webhook_id = request.headers.get("webhook-id", request.headers.get("X-Bachs-Webhook-Id", ""))
@@ -156,9 +177,27 @@ def bachs_webhook(request):
             supplied_legacy = supplied.removeprefix("sha256=")
             valid_signature = hmac.compare_digest(supplied_legacy, expected)
     if not valid_signature:
+        delivery.status = "invalid_signature"
+        delivery.error = "Signature did not match configured BACHS_WEBHOOK_SECRET"
+        delivery.save(update_fields=["status", "error"])
+        logger.error("Bachs webhook rejected delivery=%s: invalid signature", delivery.pk)
         return JsonResponse({"detail": "Invalid signature"}, status=401)
-    payload = json.loads(request.body or "{}")
-    result = reconcile_collection_event(payload)
+    delivery.signature_valid = True
+    payload = incoming_payload
+    try:
+        result = reconcile_collection_event(payload)
+    except Exception as error:
+        delivery.status = "processing_failed"
+        delivery.error = str(error)[:2000]
+        delivery.processed_at = timezone.now()
+        delivery.save(update_fields=["signature_valid", "status", "error", "processed_at"])
+        logger.exception("Bachs webhook processing failed delivery=%s", delivery.pk)
+        return JsonResponse({"detail": "Webhook processing failed"}, status=500)
+    delivery.status = result.get("status", "processed")
+    delivery.error = result.get("reason", "")
+    delivery.processed_at = timezone.now()
+    delivery.save(update_fields=["signature_valid", "status", "error", "processed_at"])
+    logger.info("Bachs webhook processed delivery=%s result=%s order=%s", delivery.pk, result.get("status"), result.get("order_id", ""))
     if result.get("status") == "confirmed":
         order = result["order"]
         order_url = request.build_absolute_uri(f"/order/{order.pk}/?buyer_token={order.buyer_access_token}")
