@@ -12,7 +12,10 @@ urlpatterns = [
     path("dashboard/bank/", views.bank_account, name="bank_account"),
     path("exchange/new/", views.create_exchange, name="create_exchange"),
     path("exchange/<str:token>/", views.exchange_detail, name="exchange_detail"),
+    # Accept both spellings so providers that do not follow redirects can post
+    # successfully even when the trailing slash is omitted.
     path("webhooks/bachs/", views.bachs_webhook, name="bachs_webhook"),
+    path("webhooks/bachs", views.bachs_webhook),
     path("jobs/release-reservations/", views.release_reservations_job, name="release_reservations_job"),
     path("sell/", views.sell, name="sell"),
     path("listing/<int:pk>/", views.listing_detail, name="listing_detail"),
